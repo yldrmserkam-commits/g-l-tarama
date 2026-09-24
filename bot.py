@@ -18,13 +18,12 @@ TARAMA_YAPILACAK_PERIYOTLAR = {
 }
 
 CCI_PERIYOT = 20  
-EMA_KISA = 6
 EMA_TREND = 20    
 
 # --- FİLTRE AKTİFLİK AYARLARI ---
-HACIM_FILTRESI_AKTIF = True     
+HACIM_FILTRESI_AKTIF = True      
 HACIM_ORT_PERIYOT = 10
-TREND_FILTRESI_AKTIF = True     
+TREND_FILTRESI_AKTIF = True      
 
 # Telegram Bildirim Ayarları
 TELEGRAM_AKTIF = True
@@ -150,7 +149,7 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
     if not aktif_mi:
         continue
 
-    print(f"\n🔍 '{periyot_adi}' periyodu için FİLTRELİ EMA(6) & CCI(-100) kesişim taraması başladı...")
+    print(f"\n🔍 '{periyot_adi}' periyodu için CCI & Trend & Hacim taraması başladı...")
     ayar = PERIYOT_AYARLARI[periyot_adi]
 
     for ticker in tqdm(tickers, desc=f"{periyot_adi} Taranıyor"):
@@ -180,35 +179,29 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
             if curr_vol == 0:
                 continue
 
-            ema6 = df['Close'].ewm(span=EMA_KISA, adjust=False).mean()
+            # İndikatör Hesaplamaları
             ema20 = df['Close'].ewm(span=EMA_TREND, adjust=False).mean()
-
-            close_curr = float(df['Close'].iloc[-1])
-            close_prev = float(df['Close'].iloc[-2])
-            ema6_curr = float(ema6.iloc[-1])
-            ema6_prev = float(ema6.iloc[-2])
-            ema20_curr = float(ema20.iloc[-1])
-
-            ema6_cross_above = (close_curr > ema6_curr) and (close_prev <= ema6_prev)
-            if not ema6_cross_above:
-                continue
-
+            
             tp = (df['High'] + df['Low'] + df['Close']) / 3
             sma_tp = tp.rolling(window=CCI_PERIYOT).mean()
             mad = tp.rolling(window=CCI_PERIYOT).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
             cci = (tp - sma_tp) / (0.015 * mad)
 
+            close_curr = float(df['Close'].iloc[-1])
+            ema20_curr = float(ema20.iloc[-1])
             prev_cci = float(cci.iloc[-2])
             curr_cci = float(cci.iloc[-1])
 
-            cci_cross_above_minus100 = (prev_cci < -100) and (curr_cci >= -100)
-            if not cci_cross_above_minus100:
+            # 1. Kural: CCI -100'ün üzerinde olmalı ve bir önceki muma göre yükselişte olmalı
+            if not ((curr_cci > -100) and (curr_cci > prev_cci)):
                 continue
 
+            # 2. Kural: Trend Filtresi (Fiyat EMA 20'nin üzerinde olmalı)
             if TREND_FILTRESI_AKTIF:
                 if close_curr < ema20_curr:
                     continue  
 
+            # 3. Kural: Hacim Filtresi (Son hacim 10 mumluk ortalamadan büyük olmalı)
             if HACIM_FILTRESI_AKTIF:
                 vol_sma = df['Volume'].rolling(window=HACIM_ORT_PERIYOT).mean()
                 vol_sma_curr = float(vol_sma.iloc[-1])
@@ -219,7 +212,6 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
                 'Zaman Dilimi': periyot_adi,
                 'Hisse': ticker,
                 'Son Kapanis': round(close_curr, 2),
-                'EMA 6': round(ema6_curr, 2),
                 'EMA 20': round(ema20_curr, 2),
                 'Önceki CCI': round(prev_cci, 2),
                 'Son CCI': round(curr_cci, 2),
@@ -230,12 +222,12 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
 
             tv_link = f"https://www.tradingview.com/chart/?symbol=BIST:{ticker}"
             msg = (
-                f"🚨 *GÜÇLÜ SİNYAL YAKALANDI (Filtreli)*\n"
+                f"🚨 *GÜÇLÜ SİNYAL YAKALANDI*\n"
                 f"*Hisse:* `{ticker}`\n"
                 f"*Periyot:* {periyot_adi}\n"
                 f"*Fiyat:* {close_curr}\n"
                 f"*EMA 20:* {ema20_curr:.2f}\n"
-                f"*CCI:* {curr_cci:.2f}\n"
+                f"*CCI:* {curr_cci:.2f} (Önceki: {prev_cci:.2f})\n"
                 f"📊 *Hacim Durumu:* Ortalamanın {bilgi['Hacim/Ort']}x katı\n\n"
                 f"📈 [TradingView Grafiği Aç]({tv_link})"
             )
@@ -248,7 +240,7 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
 if results:
     df_results = pd.DataFrame(results)
     df_results = df_results.sort_values(by=['Zaman Dilimi', 'Hisse']).reset_index(drop=True)
-    excel_filename = "Filtrli_EMA6_CCI_Kesisim_Sonuclari.xlsx"
+    excel_filename = "CCI_Trend_Hacim_Tarama_Sonuclari.xlsx"
     df_results.to_excel(excel_filename, index=False)
     print(f"\n✅ Tarama tamamlandı! Toplam {len(results)} hisse tüm filtrelere uyarak sinyal verdi.")
 else:
