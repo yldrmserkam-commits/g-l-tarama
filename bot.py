@@ -20,13 +20,16 @@ TARAMA_YAPILACAK_PERIYOTLAR = {
 
 CCI_PERIYOT = 20
 EMA_TREND = 20
-RSI_PERIYOT = 14  # Yeni RSI Periyodu
+RSI_PERIYOT = 14
 
 # --- FİLTRE AKTİFLİK AYARLARI ---
 HACIM_FILTRESI_AKTIF = True
 HACIM_ORT_PERIYOT = 10
 TREND_FILTRESI_AKTIF = True
-RSI_FILTRESI_AKTIF = True  # RSI Filtresi Aktif
+RSI_FILTRESI_AKTIF = True
+
+# 🚀 SADECE ANLIK VE YENİ SİNYALLER İÇİN HAFIZA (Daha önce atılanlar bir daha atılmaz)
+GONDERILEN_SINYALLER = set()
 
 # Telegram Bildirim Ayarları
 TELEGRAM_AKTIF = True
@@ -701,8 +704,7 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
     continue
 
   print(
-      f"\n🔍 '{periyot_adi}' periyodu için CCI & Trend & Hacim & RSI taraması"
-      ' başladı...'
+      f"\n🔍 '{periyot_adi}' periyodu için anlık kesişim taraması başladı..."
   )
   ayar = PERIYOT_AYARLARI[periyot_adi]
 
@@ -742,7 +744,6 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
       # --- İndikatör Hesaplamaları ---
       ema20 = df['Close'].ewm(span=EMA_TREND, adjust=False).mean()
 
-      # CCI Hesaplama
       tp = (df['High'] + df['Low'] + df['Close']) / 3
       sma_tp = tp.rolling(window=CCI_PERIYOT).mean()
       mad = tp.rolling(window=CCI_PERIYOT).apply(
@@ -750,7 +751,6 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
       )
       cci = (tp - sma_tp) / (0.015 * mad)
 
-      # RSI Hesaplama (14 Periyot)
       delta = df['Close'].diff()
       gain = delta.where(delta > 0, 0.0)
       loss = -delta.where(delta < 0, 0.0)
@@ -766,29 +766,26 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
 
       curr_rsi = float(rsi.iloc[-1])
       prev_rsi = float(rsi.iloc[-2])
-      # Bir önceki mumun öncesi (en fazla 1 mum kuralını desteklemek için)
       prev_prev_rsi = float(rsi.iloc[-3])
 
       # 1. Kural: CCI -100'ün üzerinde ve yükselişte
       if not ((curr_cci > -100) and (curr_cci > prev_cci)):
         continue
 
-      # 2. Kural: Trend Filtresi (Fiyat EMA 20'nin üzerinde olmalı)
+      # 2. Kural: Trend Filtresi
       if TREND_FILTRESI_AKTIF:
         if close_curr < ema20_curr:
           continue
 
-      # 3. Kural: Hacim Filtresi (Son hacim 10 mumluk ortalamadan büyük olmalı)
+      # 3. Kural: Hacim Filtresi
       if HACIM_FILTRESI_AKTIF:
         vol_sma = df['Volume'].rolling(window=HACIM_ORT_PERIYOT).mean()
         vol_sma_curr = float(vol_sma.iloc[-1])
         if curr_vol <= vol_sma_curr:
           continue
 
-      # 4. Kural: RSI Filtresi (70'i yeni geçmiş olsun: Ya tam bu mum geçti ya da en fazla 1 mum önce geçti)
+      # 4. Kural: RSI Filtresi (70'i YENİ geçmiş olsun)
       if RSI_FILTRESI_AKTIF:
-        # Şart 1: Son mumda 70 üstünde ve önceki mumda 70 altındaydı (Tam kesişim)
-        # Şart 2: Ya da son mum 70 üstünde, bir önceki mum 70 üstünde ama ondan önceki mum 70 altındaydı (1 mum önce geçmiş)
         tam_kesisim = (curr_rsi > 70) and (prev_rsi <= 70)
         bir_mum_once_gecti = (
             (curr_rsi > 70) and (prev_rsi > 70) and (prev_prev_rsi <= 70)
@@ -796,6 +793,16 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
 
         if not (tam_kesisim or bir_mum_once_gecti):
           continue
+
+      # 🚀 5. KESİN KORUMA: Sadece o mumun kapanış/açılış zamanı (Bar Zamanı) baz alınır.
+      # Böylece aynı bar içinde bot 50 kere çalışsa bile sadece 1 kez mesaj atar.
+      son_mum_zamani = str(df.index[-1])
+      sinyal_kimligi = f"{ticker}_{periyot_adi}_{son_mum_zamani}"
+
+      if sinyal_kimligi in GONDERILEN_SINYALLER:
+        continue  # Bu mumun sinyali daha önce atıldı, atla!
+
+      GONDERILEN_SINYALLER.add(sinyal_kimligi)
 
       bilgi = {
           'Zaman Dilimi': periyot_adi,
@@ -807,13 +814,13 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
           'Hacim/Ort': round(
               curr_vol / float(df['Volume'].rolling(10).mean().iloc[-1]), 2
           ),
-          'Tarih/Saat': str(df.index[-1]),
+          'Tarih/Saat': son_mum_zamani,
       }
       results.append(bilgi)
 
       tv_link = f'https://www.tradingview.com/chart/?symbol=BIST:{ticker}'
       msg = (
-          f'🚨 *GÜÇLÜ SİNYAL YAKALANDI*\n'
+          f'🚨 *YENİ ANLIK KESİŞİM SİNYALİ*\n'
           f'*Hisse:* `{ticker}`\n'
           f'*Periyot:* {periyot_adi}\n'
           f'*Fiyat:* {close_curr}\n'
@@ -834,14 +841,11 @@ if results:
   df_results = df_results.sort_values(
       by=['Zaman Dilimi', 'Hisse']
   ).reset_index(drop=True)
-  excel_filename = 'CCI_RSI_Trend_Hacim_Tarama_Sonuclari.xlsx'
+  excel_filename = 'Anlik_Kesisim_Tarama_Sonuclari.xlsx'
   df_results.to_excel(excel_filename, index=False)
   print(
-      f'\n✅ Tarama tamamlandı! Toplam {len(results)} hisse tüm filtrelere uyarak'
-      ' sinyal verdi.'
+      f'\n✅ Tarama tamamlandı! Sadece bu tarama anında yeni oluşan {len(results)}'
+      ' taze sinyal gönderildi.'
   )
 else:
-  print(
-      '\n⚠️ Seçili periyotlarda filtrelere takılmadan tüm şartları sağlayan'
-      ' hisse bulunamadı.'
-  )
+  print('\n⚠️ Bu tarama anında yeni oluşan (taze) sinyal bulunamadı.')
