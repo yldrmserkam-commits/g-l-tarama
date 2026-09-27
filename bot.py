@@ -1,3 +1,13 @@
+import subprocess
+import sys
+
+# Eksik kütüphaneleri otomatik yükle (GitHub Actions için)
+for paket in ['yfinance', 'pandas', 'numpy', 'requests', 'openpyxl', 'tqdm']:
+    try:
+        __import__(paket)
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", paket])
+
 import os
 import json
 import time
@@ -43,9 +53,9 @@ CCI_PERIYOT = 20
 EMA_TREND = 20    
 
 # --- FİLTRE AKTİFLİK AYARLARI ---
-HACIM_FILTRESI_AKTIF = True       
+HACIM_FILTRESI_AKTIF = True         
 HACIM_ORT_PERIYOT = 10
-TREND_FILTRESI_AKTIF = True       
+TREND_FILTRESI_AKTIF = True         
 
 # Telegram Bildirim Ayarları
 TELEGRAM_AKTIF = True
@@ -164,7 +174,7 @@ ham_tickers = [
     'YUNSA.IS', 'YYAPI.IS', 'YYLGD.IS', 'ZEDUR.IS', 'ZERGY.IS', 'ZGYO.IS', 'ZOREN.IS', 'ZRGYO.IS'
 ]
 
-tickers = list(set([t.replace('.IS', '') for t in ham_tickers]))
+ticker_symbols = sorted(list(set(ham_tickers)))
 results = []
 gonderilenler = sinyalleri_yukle()
 
@@ -172,19 +182,34 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
     if not aktif_mi:
         continue
 
-    print(f"\n🔍 '{periyot_adi}' periyodu için CCI & Trend & Hacim taraması başladı...")
+    print(f"\n🔍 '{periyot_adi}' periyodu için toplu veri indiriliyor...")
     ayar = PERIYOT_AYARLARI[periyot_adi]
 
-    for ticker in tqdm(tickers, desc=f"{periyot_adi} Taranıyor"):
+    try:
+        data = yf.download(
+            tickers=ticker_symbols,
+            period=ayar["period"],
+            interval=ayar["interval"],
+            group_by="ticker",
+            progress=False,
+            threads=True
+        )
+    except Exception as e:
+        print(f"Veri indirilirken hata oluştu: {e}")
+        continue
+
+    for ticker_symbol in tqdm(ticker_symbols, desc=f"{periyot_adi} Taranıyor"):
+        ticker = ticker_symbol.replace('.IS', '')
         try:
-            ticker_symbol = f"{ticker}.IS"
-            df = yf.download(ticker_symbol, period=ayar["period"], interval=ayar["interval"], progress=False)
+            if isinstance(data.columns, pd.MultiIndex):
+                if ticker_symbol not in data.columns.levels[0]:
+                    continue
+                df = data[ticker_symbol].copy().dropna(how="all")
+            else:
+                df = data.copy().dropna(how="all")
 
             if df.empty or len(df) < max(CCI_PERIYOT + 5, 25):
                 continue
-
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.droplevel(1)
 
             if ayar["resample_rule"]:
                 df = df.resample(ayar["resample_rule"]).agg({
@@ -234,6 +259,8 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
             mum_tarihi = str(df.index[-1].strftime('%Y-%m-%d-%H-%M') if hasattr(df.index[-1], 'strftime') else df.index[-1])
             sinyal_id = f"{ticker}_{periyot_adi}_{mum_tarihi}"
 
+            hacim_oran = round(curr_vol / float(df['Volume'].rolling(10).mean().iloc[-1]), 2)
+
             bilgi = {
                 'Zaman Dilimi': periyot_adi,
                 'Hisse': ticker,
@@ -241,12 +268,12 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
                 'EMA 20': round(ema20_curr, 2),
                 'Önceki CCI': round(prev_cci, 2),
                 'Son CCI': round(curr_cci, 2),
-                'Hacim/Ort': round(curr_vol / float(df['Volume'].rolling(10).mean().iloc[-1]), 2),
+                'Hacim/Ort': hacim_oran,
                 'Tarih/Saat': str(df.index[-1])
             }
             results.append(bilgi)
 
-            # Daha önce bu mum için bildirim gönderilmiş mi kontrol et
+            # Yalnızca bu mum için daha önce mesaj gönderilmediyse Telegram'a at ve kaydet
             if sinyal_id not in gonderilenler:
                 tv_link = f"https://www.tradingview.com/chart/?symbol=BIST:{ticker}"
                 msg = (
@@ -256,7 +283,7 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
                     f"*Fiyat:* {close_curr}\n"
                     f"*EMA 20:* {ema20_curr:.2f}\n"
                     f"*CCI:* {curr_cci:.2f} (Önceki: {prev_cci:.2f})\n"
-                    f"📊 *Hacim Durumu:* Ortalamanın {bilgi['Hacim/Ort']}x katı\n\n"
+                    f"📊 *Hacim Durumu:* Ortalamanın {hacim_oran}x katı\n\n"
                     f"📈 [TradingView Grafiği Aç]({tv_link})"
                 )
                 telegram_mesaj_gonder(msg)
@@ -266,7 +293,7 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
         except Exception:
             pass
 
-# Takip dosyasını güncelle
+# Takip dosyasını GitHub repoda saklanmak üzere güncelle
 sinyalleri_kaydet(gonderilenler)
 
 if results:
@@ -274,6 +301,6 @@ if results:
     df_results = df_results.sort_values(by=['Zaman Dilimi', 'Hisse']).reset_index(drop=True)
     excel_filename = "CCI_Trend_Hacim_Tarama_Sonuclari.xlsx"
     df_results.to_excel(excel_filename, index=False)
-    print(f"\n✅ Tarama tamamlandı! Toplam {len(results)} hisse tüm filtrelere uyarak sinyal verdi.")
+    print(f"\n✅ Tarama tamamlandı! Toplam {len(results)} hisse filtrelere uyuyor.")
 else:
-    print("\n⚠️ Seçili periyotlarda filtrelere takılmadan tüm şartları sağlayan hisse bulunamadı.")
+    print("\n⚠️ Seçili periyotlarda filtrelere takılan hisse bulunamadı.")
