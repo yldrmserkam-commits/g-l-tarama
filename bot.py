@@ -44,8 +44,8 @@ TARAMA_YAPILACAK_PERIYOTLAR = {
     "30 Dakikalık": True,
     "1 Saatlik": True,
     "4 Saatlik": True,
-    "Günlük": True,
-    "Haftalık": True,
+    "Günlük": False,
+    "Haftalık": False,
     "Aylık": False
 }
 
