@@ -1,7 +1,7 @@
 import subprocess
 import sys
 
-# Eksik kütüphaneleri otomatik yükle (GitHub Actions için)
+# Eksik kütüphaneleri otomatik yükle (GitHub Actions / Lokal)
 for paket in ['yfinance', 'pandas', 'numpy', 'requests', 'openpyxl', 'tqdm']:
     try:
         __import__(paket)
@@ -16,21 +16,27 @@ import warnings
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from datetime import datetime
 from tqdm import tqdm
 
 warnings.filterwarnings('ignore')
 
-# --- SİNYAL TAKİP DOSYASI AYARI (GitHub / Bulut İçin) ---
+# --- SİNYAL TAKİP DOSYASI AYARI ---
 STATE_FILE = "gonderilen_sinyaller.json"
 
 def sinyalleri_yukle():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Günlük Sıfırlama: Eğer kayıtlı gün bugün değilse hafızayı temizle (Taze gün başlangıcı)
+                bugun = datetime.now().strftime('%Y-%m-%d')
+                if data.get("_tarih") != bugun:
+                    return {"_tarih": bugun}
+                return data
         except Exception:
-            return {}
-    return {}
+            return {"_tarih": datetime.now().strftime('%Y-%m-%d')}
+    return {"_tarih": datetime.now().strftime('%Y-%m-%d')}
 
 def sinyalleri_kaydet(state):
     try:
@@ -57,10 +63,10 @@ HACIM_FILTRESI_AKTIF = True
 HACIM_ORT_PERIYOT = 10
 TREND_FILTRESI_AKTIF = True         
 
-# Telegram Bildirim Ayarları
+# Telegram Bildirim Ayarları (Güvenlik için Environment Variable önceliklidir)
 TELEGRAM_AKTIF = True
-TELEGRAM_BOT_TOKEN = "8909661577:AAExPm7d6hohqkZV9XG_FMTcjjU_Z3hP92w"
-TELEGRAM_CHAT_ID = "889982961"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8909661577:AAExPm7d6hohqkZV9XG_FMTcjjU_Z3hP92w")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "889982961")
 
 def telegram_mesaj_gonder(mesaj):
     if not TELEGRAM_AKTIF:
@@ -220,8 +226,14 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
                     'Volume': 'sum'
                 }).dropna()
 
-                if len(df) < max(CCI_PERIYOT + 5, 25):
-                    continue
+            # --- TAZE SİNYAL DÜZELTMESİ (GÜNCEL CANLI MUMU YOK SAYMA) ---
+            # Gün içi periyotlarda yfinance'ın getirdiği son mum henüz tamamlanmamış canlı mumdur.
+            # Sinyallerin sürekli oynamasını önlemek için strictly KAPANMIŞ SON MUMU (iloc[-2]) esas alıyoruz.
+            if periyot_adi in ["30 Dakikalık", "1 Saatlik", "4 Saatlik"]:
+                df = df.iloc[:-1]
+
+            if len(df) < max(CCI_PERIYOT + 5, 25):
+                continue
 
             curr_vol = float(df['Volume'].iloc[-1])
             if curr_vol == 0:
@@ -250,16 +262,18 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
                     continue  
 
             # 3. Kural: Hacim Filtresi (Son hacim 10 mumluk ortalamadan büyük olmalı)
+            vol_sma = df['Volume'].rolling(window=HACIM_ORT_PERIYOT).mean()
+            vol_sma_curr = float(vol_sma.iloc[-1])
+
             if HACIM_FILTRESI_AKTIF:
-                vol_sma = df['Volume'].rolling(window=HACIM_ORT_PERIYOT).mean()
-                vol_sma_curr = float(vol_sma.iloc[-1])
                 if curr_vol <= vol_sma_curr:
                     continue  
 
-            mum_tarihi = str(df.index[-1].strftime('%Y-%m-%d-%H-%M') if hasattr(df.index[-1], 'strftime') else df.index[-1])
-            sinyal_id = f"{ticker}_{periyot_adi}_{mum_tarihi}"
+            # Sinyal Zaman Tanımı (Standardize edilmiş Timestamp)
+            mum_zaman_str = pd.to_datetime(df.index[-1]).strftime('%Y%m%d_%H%M')
+            sinyal_id = f"{ticker}_{periyot_adi}_{mum_zaman_str}"
 
-            hacim_oran = round(curr_vol / float(df['Volume'].rolling(10).mean().iloc[-1]), 2)
+            hacim_oran = round(curr_vol / vol_sma_curr, 2)
 
             bilgi = {
                 'Zaman Dilimi': periyot_adi,
