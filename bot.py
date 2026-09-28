@@ -281,11 +281,16 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
             if not ((curr_cci > -100) and (curr_cci > prev_cci)):
                 continue
 
-            # --- 2. RSI 70 KESİŞİM KOŞULU ---
-            tam_kesisim = (curr_rsi > 70) and (prev_rsi <= 70)
-            bir_mum_once_gecti = (curr_rsi > 70) and (prev_rsi > 70) and (prev_prev_rsi <= 70)
-            if not (tam_kesisim or bir_mum_once_gecti):
+            # --- 2. KATI KONTROLLÜ RSI ARALIK VE İVME KOŞULU ---
+            rsi_ivme_yukari = (curr_rsi > prev_rsi) and (prev_rsi > prev_prev_rsi)
+            
+            kosul_40_52 = (40.0 <= curr_rsi <= 52.0) and rsi_ivme_yukari
+            kosul_65_72 = (65.0 <= curr_rsi <= 72.0) and rsi_ivme_yukari
+
+            if not (kosul_40_52 or kosul_65_72):
                 continue
+
+            sinyal_turu = "RSI (40-52) İvme Yukarı" if kosul_40_52 else "RSI (65-72) İvme Yukarı"
 
             # --- 3. TREND FİLTRESİ (EMA 20) ---
             if TREND_FILTRESI_AKTIF and (close_curr < ema20_curr):
@@ -303,7 +308,7 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
 
             # Sinyal Zaman Tanımı
             mum_zaman_str = pd.to_datetime(df.index[-1]).strftime('%Y%m%d_%H%M')
-            sinyal_id = f"{ticker}_{periyot_adi}_{mum_zaman_str}"
+            sinyal_id = f"{ticker}_{periyot_adi}_{sinyal_turu}_{mum_zaman_str}"
 
             hacim_oran = round(curr_vol / vol_sma_curr, 2)
 
@@ -324,6 +329,7 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
             bilgi = {
                 'Zaman Dilimi': periyot_adi,
                 'Hisse': ticker,
+                'Sinyal Türü': sinyal_turu,
                 'Giriş (Entry)': round(entry_fiyat, 2),
                 'Stop-Loss (SL)': round(stop_loss, 2),
                 'Hedef 1 (TP1)': round(tp1, 2),
@@ -340,7 +346,7 @@ for periyot_adi, aktif_mi in TARAMA_YAPILACAK_PERIYOTLAR.items():
             if sinyal_id not in gonderilenler:
                 tv_link = f"https://www.tradingview.com/chart/?symbol=BIST:{ticker}"
                 msg = (
-                    f"🟢 *BIST LONG POZİSYON SİNYALİ*\n"
+                    f"🟢 *BIST LONG POZİSYON SİNYALİ ({sinyal_turu})*\n"
                     f"*Hisse:* `{ticker}` | *Periyot:* {periyot_adi}\n\n"
                     f"🔵 *ENTRY:* `{entry_fiyat:.2f}`\n"
                     f"🔴 *SL (Stop):* `{stop_loss:.2f}`\n\n"
